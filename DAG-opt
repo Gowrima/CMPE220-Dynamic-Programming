@@ -1,0 +1,480 @@
+/*********************************************************************
+ * hw1.c Program to calculate minimum total cost with computed 
+ *       confidence probabilities under a timing constraint.
+ *
+ *       Implementation of the DAG-Opt algorithm in Chapter 1 of
+ *       Introduction to Real Time Embedded Systems by Dr.Meikang Qiu
+ *       (For the CMPE 220 Class Fall 2013)
+ *
+ * Author: Gowrima Kikkeri Jayaramu
+ *         gowrima.jayaramu@sjsu.edu
+ *         kj.gowrima@gmail.com 
+ *
+ * Copyright (c) 2013 All Rights Reserved
+ ********************************************************************/
+
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct TPC {
+    int time;
+    float prob;
+    int cost;
+} TPC;
+
+#define FUTPC_SIZE 2
+typedef struct FUTPC {
+    TPC row1;
+    TPC row2;
+} FUTPC;
+
+#define NODE_TPC 2
+typedef struct nodeTPC {
+    FUTPC R1;
+    FUTPC R2;
+} nodeTPC;
+
+typedef struct hw1 {
+    nodeTPC nodes[3];
+} hw1;
+
+hw1 hw;
+
+//Structure of linked list node in E table
+typedef struct node {
+    float prob;
+    int cost;
+    struct node *next;
+} node;
+
+//Create one E Table per node, there are as many columns as time constraint
+// Each element of the Etable is the head of a linked list
+node* Node0ETable[4]; 
+node* Node1ETable[5]; 
+node* Node2ETable[6]; 
+
+node* Node01DTable[11]; 
+node* Node2DTable[17]; 
+
+// Fill up from sheet
+void initHw()
+{
+    hw.nodes[0].R1.row1.time = 1;
+    hw.nodes[0].R1.row1.prob = 0.9;
+    hw.nodes[0].R1.row1.cost = 10;
+    hw.nodes[0].R1.row2.time = 3;
+    hw.nodes[0].R1.row2.prob = 0.1;
+    hw.nodes[0].R1.row2.cost = 10;
+
+    hw.nodes[0].R2.row1.time = 2;
+    hw.nodes[0].R2.row1.prob = 0.7;
+    hw.nodes[0].R2.row1.cost = 4;
+    hw.nodes[0].R2.row2.time = 4;
+    hw.nodes[0].R2.row2.prob = 0.3;
+    hw.nodes[0].R2.row2.cost = 4;
+
+    hw.nodes[1].R1.row1.time = 1;
+    hw.nodes[1].R1.row1.prob = 0.8;
+    hw.nodes[1].R1.row1.cost = 8;
+    hw.nodes[1].R1.row2.time = 4;
+    hw.nodes[1].R1.row2.prob = 0.2;
+    hw.nodes[1].R1.row2.cost = 8;
+
+    hw.nodes[1].R2.row1.time = 3;
+    hw.nodes[1].R2.row1.prob = 0.6;
+    hw.nodes[1].R2.row1.cost = 3;
+    hw.nodes[1].R2.row2.time = 5;
+    hw.nodes[1].R2.row2.prob = 0.4;
+    hw.nodes[1].R2.row2.cost = 3;
+
+
+    hw.nodes[2].R1.row1.time = 1;
+    hw.nodes[2].R1.row1.prob = 0.9;
+    hw.nodes[2].R1.row1.cost = 9;
+    hw.nodes[2].R1.row2.time = 4;
+    hw.nodes[2].R1.row2.prob = 0.1;
+    hw.nodes[2].R1.row2.cost = 9;
+    
+    hw.nodes[2].R2.row1.time = 2;
+    hw.nodes[2].R2.row1.prob = 0.8;
+    hw.nodes[2].R2.row1.cost = 5;
+    hw.nodes[2].R2.row2.time = 6;
+    hw.nodes[2].R2.row2.prob = 0.2;
+    hw.nodes[2].R2.row2.cost = 5;
+}
+
+
+void printList(int i,  node *temp)
+{
+    printf("Time %d: ", i+1);
+    while(temp != NULL) {
+        printf("-->(%f, %d)", temp->prob, temp->cost);
+        temp = temp->next;
+    }
+    printf("\n");
+}
+
+void printNodesETable()
+{
+    int i = 0;
+    printf("Node 0 E Table\n");
+    for(i=0; i < 4; ++i) {
+        printList(i, Node0ETable[i]);
+    }
+    printf("Node 1 E Table\n");
+    for(i=0; i < 5; ++i) {
+        printList(i, Node1ETable[i]);
+    }
+    printf("Node 2 E Table\n");
+    for(i=0; i < 6; ++i) {
+        printList(i, Node2ETable[i]);
+    }
+}
+
+void addToSortedList(node **head, float input_prob, int input_cost)
+{
+    node *iterator, *prev;
+    node *newnode = (node *)malloc(sizeof(node));
+    if (newnode == NULL) {
+        printf("Out of memory!!\n");
+    }
+    newnode->prob = input_prob;
+    newnode->cost = input_cost;
+    newnode->next = NULL;
+
+    if (*head == NULL) {
+        *head = newnode;
+        return;
+    } else {
+        iterator = *head;
+        prev = NULL;
+
+        while (iterator != NULL) {
+            if (iterator->prob < input_prob) {
+                prev = iterator;
+                iterator = iterator->next;
+            } else {
+                break;
+            }
+        }
+        //Insert at the head 
+        if (prev == NULL) {
+            newnode->next = *head;
+            *head = newnode;
+            return;
+        }
+        //Insert at end
+        if (iterator == NULL) {
+            prev->next = newnode;
+        } else {
+            //Insert in between two elements
+            prev->next = newnode;
+            newnode->next = iterator;
+        }
+    }
+}
+
+int 
+mymax(int a, int b)
+{
+    if (a < b) {
+        return b;
+    } else {
+        return a;
+    }
+}
+
+//Create E table for each node
+void createEtable() {
+    int i = 0, res = 0;
+    for (i = 0; i < 4; i++) {
+        if (hw.nodes[0].R1.row1.time <= i+1) {
+            res = mymax(hw.nodes[0].R1.row1.time, hw.nodes[0].R1.row2.time);
+            if (res <= i+1) {
+                res = mymax(hw.nodes[0].R1.row1.cost,  hw.nodes[0].R1.row2.cost);
+                addToSortedList(&Node0ETable[i], 1.0, res);
+            } else {
+                addToSortedList(&Node0ETable[i], hw.nodes[0].R1.row1.prob, hw.nodes[0].R1.row1.cost);
+            }
+        }
+        if (hw.nodes[0].R2.row1.time <= i+1) {
+            res = mymax(hw.nodes[0].R2.row1.time, hw.nodes[0].R2.row2.time);
+            if (res <= i+1) {
+               res = mymax(hw.nodes[0].R2.row1.cost,  hw.nodes[0].R2.row2.cost);
+               addToSortedList(&Node0ETable[i], 1.0, res);
+            } else {
+                addToSortedList(&Node0ETable[i], hw.nodes[0].R2.row1.prob, hw.nodes[0].R2.row1.cost);
+            }
+        }
+    }
+
+    for (i = 0; i < 5; i++) {
+        if (hw.nodes[1].R1.row1.time <= i+1) {
+            res = mymax(hw.nodes[1].R1.row1.time, hw.nodes[1].R1.row2.time);
+            if (res <= i+1) { 
+                res = mymax(hw.nodes[1].R1.row1.cost,  hw.nodes[1].R1.row2.cost);
+                addToSortedList(&Node1ETable[i], 1.0, res);
+            } else {
+                addToSortedList(&Node1ETable[i], hw.nodes[1].R1.row1.prob, hw.nodes[1].R1.row1.cost);
+            }
+        }
+        if (hw.nodes[1].R2.row1.time <= i+1) {
+            res = mymax(hw.nodes[1].R2.row1.time, hw.nodes[1].R2.row2.time);
+            if (res <= i+1) {
+               res = mymax(hw.nodes[1].R2.row1.cost,  hw.nodes[1].R2.row2.cost);
+               addToSortedList(&Node1ETable[i], 1.0, res);
+            } else {
+                addToSortedList(&Node1ETable[i], hw.nodes[1].R2.row1.prob, hw.nodes[1].R2.row1.cost);
+            }
+        }
+    }
+
+    for (i = 0; i < 6; i++) {
+        if (hw.nodes[2].R1.row1.time <= i+1) {
+            res = mymax(hw.nodes[2].R1.row1.time, hw.nodes[2].R1.row2.time);
+            if (res <= i+1) {
+                res = mymax(hw.nodes[2].R1.row1.cost,  hw.nodes[2].R1.row2.cost);
+                addToSortedList(&Node2ETable[i], 1.0, res);
+            } else {
+                addToSortedList(&Node2ETable[i], hw.nodes[2].R1.row1.prob, hw.nodes[2].R1.row1.cost);
+            }
+        }
+        if (hw.nodes[2].R2.row1.time <= i+1) {
+            res = mymax(hw.nodes[2].R2.row1.time, hw.nodes[2].R2.row2.time);
+            if (res <= i+1) {
+               res = mymax(hw.nodes[2].R2.row1.cost,  hw.nodes[2].R2.row2.cost);
+               addToSortedList(&Node2ETable[i], 1.0, res);
+            } else {
+                addToSortedList(&Node2ETable[i], hw.nodes[2].R2.row1.prob, hw.nodes[2].R2.row1.cost);
+            }
+        }
+    }
+}
+
+void eliminateRedundantPairs(node **head)
+{
+    int redo = 0;
+    node *temp, *toDelete, *prev;
+    redo = 0;
+    temp = *head;
+    toDelete = NULL;
+    prev = NULL;
+    
+    if (temp == NULL) {
+        return;
+    }
+    while (temp != NULL) {
+        if (temp->next == NULL) {
+            break;
+        }
+        if (temp->prob == temp->next->prob) {
+                if (temp->cost <= temp->next->cost) {
+                    //Get rid of the next guy in the list
+                    prev = temp;
+                    temp = temp->next;
+                    prev->next = temp->next;
+                    free(temp);
+                    temp = NULL;
+                } else {
+                    //Get rid of the current guy
+                    if (temp == *head) {
+                        *head = (*head)->next;
+                        free(temp);
+                        temp = NULL;
+                    } else {
+                        //If not last guy in the list
+                        if (temp->next != NULL) {
+                            prev->next = temp->next;
+                            free(temp);
+                            temp = NULL;
+
+                        } else {
+                            prev->next = NULL;
+                            free(temp);
+                            temp = NULL;
+                        }
+                    }
+                }
+            if (temp == NULL) {
+                //We just removed a redundant link, start from top of list
+                temp = *head;
+                prev = NULL;
+                continue;
+            }
+         }
+         prev = temp;
+         temp = temp->next;
+    }
+    temp = *head;
+    prev = NULL;
+    toDelete = NULL;
+    while (temp != NULL) {
+        if (temp->next == NULL) {
+            return;
+        }
+        if (temp->prob < temp->next->prob || temp->cost == 0.0)  {
+            if (temp->cost >= temp->next->cost || temp->cost == 0.0) {
+                //delete current guy
+                if (temp == *head) {
+                   *head = (*head)->next;
+                   free(temp);
+                   temp = NULL;
+                } else {
+                   //If not last guy in the list
+                   if (temp->next != NULL) {
+                        prev->next = temp->next;
+                        free(temp);
+                        temp = NULL;
+                   } else {
+                        prev->next = NULL;
+                        free(temp);
+                        temp = NULL;
+                   }
+                }
+            }
+            redo = 1;
+            if (temp == NULL) {
+                //We just removed a redundant link, start from top of list
+                temp = *head;
+                prev = NULL;
+                continue;
+            }
+        }
+        prev = temp;
+        temp = temp->next;
+    }
+}
+
+//Eliminate redundant pairs for all linked lists for a given node
+void eliminateRedundantPairsInNodes()
+{
+    int i = 0;
+    for (i = 0; i < 4; i++) {
+        eliminateRedundantPairs(&Node0ETable[i]);
+    }
+    for (i = 0; i < 5; i++) {
+        eliminateRedundantPairs(&Node1ETable[i]);
+    }
+    for (i = 0; i < 6; i++) {
+        eliminateRedundantPairs(&Node2ETable[i]);
+    }
+}
+
+//Perform node opeation node0 and node1 and get node01
+nodeOperation(node *list1, node *list2, node **dlist)
+{
+    node *temp1 = list1;
+    node *temp2 = list2;
+    int i = 0;
+    float prob;
+    float cost;
+    while (temp1 != NULL) {
+        temp2 = list2;
+        while (temp2 != NULL) {
+            prob = temp1->prob * temp2->prob;
+            cost = temp1->cost + temp2->cost;
+            addToSortedList(dlist, prob, cost);
+            ++i;
+            temp2 = temp2->next;
+        }
+        temp1 = temp1->next;
+    }
+    //printf("Added %d nodes to the list \n", i);
+}
+
+//Perform node opeation node0 and node1
+//Create D Table from E Tables
+void createDTable() {
+    int i = 0, j = 0;
+    int fi = 0, si = 0, k = 0;
+    for (k = 1; k <= 10; k++) {
+        for (i = 0; i < k; ++i) {
+            fi = i;
+            si = (k-i-1);
+            if (fi >= 3) {
+                fi = 3;
+            }
+            if (si >= 5) {
+                si = 5;
+            }
+            nodeOperation(Node0ETable[fi], Node1ETable[si], &Node01DTable[k]);
+        }
+    }
+}
+
+//Perform node opeation node01 and node2
+//Create D Table from E Tables
+void createFinalDTable()
+{
+    int i = 0, j = 0;
+    int fi = 0, si = 0, k = 0;
+    for (k = 1; k <= 16; k++) {
+        for (i = 0; i < k; ++i) {
+            fi = i;
+            si = (k-i-1);
+            if (fi >= 10) {
+                fi = 10;
+            }
+            if (si >= 5) {
+                si = 5;
+            }
+            nodeOperation(Node01DTable[fi], Node2ETable[si], &Node2DTable[k]);
+        }
+    }
+}
+
+void printDTable() 
+{
+    int i = 0;
+    printf("Node 01 D Table\n");
+    for(i=0; i < 10; ++i) {
+        printList(i, Node01DTable[i]);
+    }
+}
+
+void printFinalDTable()
+{
+    int i = 0;
+    printf("Final Node D Table\n");
+    for(i=0; i < 16; ++i) {
+        printList(i, Node2DTable[i]);
+    }
+}
+
+int main()
+{
+    initHw();
+    node **test = (node **)malloc(sizeof(node **));
+    //Create local table for each node - E table.
+    printf("Creating local table for each node...\n");
+    createEtable();
+    printf("E table for each node before removing redundant pairs...\n");
+    printNodesETable();
+    eliminateRedundantPairsInNodes();
+    printf("E table for each node after removing redundant pairs...\n");
+    printNodesETable();
+
+    printf("Creating D table for nodes 0 and node 1...\n\n");
+    createDTable();
+    int i = 0;
+    printDTable();
+    for (i = 0; i < 11; i++) {
+        eliminateRedundantPairs(&Node01DTable[i]);
+    }
+    printf("D table for nodes 0 and node 1 after removing redundant pairs...\n\n");
+    printDTable();
+    printf("Creating D table for nodes 0 and node 1 and node 2...\n\n");
+    createFinalDTable();
+    printFinalDTable();
+    for (i = 0; i < 17; i++) {
+        eliminateRedundantPairs(&Node2DTable[i]);
+    }
+    printf("Final D table for nodes after removing redundant pairs...\n");
+    printFinalDTable();
+    printf("\n\n*******************************************************************************************************\n");
+    printf("The minimum total cost is %d "
+            "with a confidence probability of %f for a "
+            "timing constraint of %d or higher. \n",
+            Node2DTable[15]->cost, Node2DTable[15]->prob, 15);
+    printf("********************************************************************************************************\n");
+}
